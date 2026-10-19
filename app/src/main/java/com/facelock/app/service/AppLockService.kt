@@ -19,15 +19,22 @@ class AppLockService : Service() {
     private val serviceScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
     private lateinit var appLockRepository: AppLockRepository
     private var lastForegroundPackage: String? = null
-    private var lastUnlockedPackage: String? = null
-    private var lastUnlockedTime: Long = 0L
 
     companion object {
         const val CHANNEL_ID = "facelock_service_channel"
         const val NOTIFICATION_ID = 1001
 
+        @Volatile
+        var lastUnlockedPackage: String? = null
+            private set
+
+        @Volatile
+        var lastUnlockedTime: Long = 0L
+            private set
+
         fun notifyUnlocked(packageName: String) {
-            // Set temporary session unlock
+            lastUnlockedPackage = packageName
+            lastUnlockedTime = System.currentTimeMillis()
         }
     }
 
@@ -41,8 +48,7 @@ class AppLockService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val unlockedPkg = intent?.getStringExtra("unlocked_package")
         if (!unlockedPkg.isNullOrEmpty()) {
-            lastUnlockedPackage = unlockedPkg
-            lastUnlockedTime = System.currentTimeMillis()
+            notifyUnlocked(unlockedPkg)
         }
         return START_STICKY
     }
@@ -59,7 +65,7 @@ class AppLockService : Service() {
         }
 
         val notification: Notification = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("FaceLock is Active")
+            .setContentTitle("FaceLock Active")
             .setContentText("Protecting locked applications")
             .setSmallIcon(android.R.drawable.ic_lock_lock)
             .setPriority(NotificationCompat.PRIORITY_LOW)
@@ -88,7 +94,7 @@ class AppLockService : Service() {
 
                         if (appLockRepository.isAppLocked(currentPackage)) {
                             val isRecentlyUnlocked = currentPackage == lastUnlockedPackage &&
-                                    (System.currentTimeMillis() - lastUnlockedTime < 3000)
+                                    (System.currentTimeMillis() - lastUnlockedTime < 5000)
 
                             if (!isRecentlyUnlocked) {
                                 launchLockOverlay(currentPackage)

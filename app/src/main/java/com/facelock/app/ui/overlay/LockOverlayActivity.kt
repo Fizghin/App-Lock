@@ -2,11 +2,8 @@ package com.facelock.app.ui.overlay
 
 import android.Manifest
 import android.content.Intent
-import android.content.pm.PackageManager
-import android.graphics.Bitmap
 import android.graphics.RectF
 import android.os.Bundle
-import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -16,12 +13,10 @@ import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
-import androidx.compose.animation.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Backspace
 import androidx.compose.material.icons.filled.*
@@ -31,7 +26,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -43,8 +37,8 @@ import com.facelock.app.data.AppLockRepository
 import com.facelock.app.ml.FaceNetEngine
 import com.facelock.app.security.PinManager
 import com.facelock.app.service.AppLockAccessibilityService
+import com.facelock.app.service.AppLockService
 import com.google.mlkit.vision.common.InputImage
-import com.google.mlkit.vision.face.Face
 import com.google.mlkit.vision.face.FaceDetection
 import com.google.mlkit.vision.face.FaceDetectorOptions
 import java.util.concurrent.Executors
@@ -89,6 +83,7 @@ class LockOverlayActivity : ComponentActivity() {
                     appLockRepository = appLockRepository,
                     onUnlockSuccess = {
                         AppLockAccessibilityService.notifyUnlocked(lockedPackageName)
+                        AppLockService.notifyUnlocked(lockedPackageName)
                         finish()
                     },
                     onCloseApp = {
@@ -250,13 +245,15 @@ fun LockOverlayScreen(
                                                             .addOnSuccessListener { faces ->
                                                                 val detectedFace = faces.firstOrNull()
                                                                 if (detectedFace != null && savedTemplate != null) {
-                                                                    val dummyBitmap = Bitmap.createBitmap(112, 112, Bitmap.Config.ARGB_8888)
-                                                                    val boundingBox = RectF(detectedFace.boundingBox)
-                                                                    val liveEmbedding = faceNetEngine.extractEmbedding(
-                                                                        faceNetEngine.preprocessBitmap(dummyBitmap, boundingBox)
-                                                                    )
-                                                                    if (faceNetEngine.match(liveEmbedding, savedTemplate)) {
-                                                                        onUnlockSuccess()
+                                                                    val frameBitmap = faceNetEngine.imageProxyToBitmap(imageProxy)
+                                                                    if (frameBitmap != null) {
+                                                                        val boundingBox = RectF(detectedFace.boundingBox)
+                                                                        val liveEmbedding = faceNetEngine.extractEmbedding(
+                                                                            faceNetEngine.preprocessBitmap(frameBitmap, boundingBox)
+                                                                        )
+                                                                        if (faceNetEngine.match(liveEmbedding, savedTemplate)) {
+                                                                            onUnlockSuccess()
+                                                                        }
                                                                     }
                                                                 }
                                                             }

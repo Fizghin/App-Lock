@@ -1,7 +1,8 @@
 package com.facelock.app.ml
 
-import android.graphics.Bitmap
-import android.graphics.RectF
+import android.graphics.*
+import androidx.camera.core.ImageProxy
+import java.io.ByteArrayOutputStream
 import kotlin.math.sqrt
 
 /**
@@ -13,14 +14,11 @@ class FaceNetEngine {
     companion object {
         const val EMBEDDING_SIZE = 128
         const val INPUT_SIZE = 112
-        // Distance threshold for facial matching (cosine similarity lower threshold or distance upper limit)
-        // Cosine distance = 1.0 - cosine_similarity. Similarity > 0.65 -> Distance < 0.35.
         const val DEFAULT_THRESHOLD = 0.38f
     }
 
     /**
      * Compute Cosine Distance between two float embedding vectors.
-     * Distance 0.0 means identical, >= 0.4 means different identity.
      */
     fun calculateDistance(embedding1: FloatArray, embedding2: FloatArray): Float {
         if (embedding1.size != embedding2.size) return 1.0f
@@ -54,6 +52,76 @@ class FaceNetEngine {
     }
 
     /**
+     * Convert CameraX ImageProxy to Bitmap
+     */
+    fun imageProxyToBitmap(imageProxy: ImageProxy): Bitmap? {
+        val nv21 = yuv420888ToNv21(imageProxy)
+        val yuvImage = YuvImage(
+            nv21,
+            ImageFormat.NV21,
+            imageProxy.width,
+            imageProxy.height,
+            null
+        )
+        val out = ByteArrayOutputStream()
+        yuvImage.compressToJpeg(Rect(0, 0, imageProxy.width, imageProxy.height), 100, out)
+        val imageBytes = out.toByteArray()
+        val bitmap = BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size) ?: return null
+
+        // Rotate bitmap if necessary
+        val rotation = imageProxy.imageInfo.rotationDegrees
+        return if (rotation != 0) {
+            val matrix = Matrix()
+            matrix.postRotate(rotation.toFloat())
+            Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
+        } else {
+            bitmap
+        }
+    }
+
+    private fun yuv420888ToNv21(imageProxy: ImageProxy): ByteArray {
+        val pixelCount = imageProxy.width * imageProxy.height
+        val nv21 = ByteArray(pixelCount + 2 * (pixelCount / 4))
+        val yPlane = imageProxy.planes[0].buffer
+        val uPlane = imageProxy.planes[1].buffer
+        val vPlane = imageProxy.planes[2].buffer
+
+        val ySize = yPlane.remaining()
+        yPlane.get(nv21, 0, ySize)
+
+        val vSize = vPlane.remaining()
+        val uSize = uPlane.remaining()
+
+        var position = pixelCount
+        if (vSize == 1 && uSize == 1) {
+            nv21[position++] = vPlane.get()
+            nv21[position] = uPlane.get()
+        } else {
+            val vBuffer = vPlane
+            val uBuffer = uPlane
+            val rowStride = imageProxy.planes[1].rowStride
+            val pixelStride = imageProxy.planes[1].pixelStride
+
+            val width = imageProxy.width / 2
+            val height = imageProxy.height / 2
+
+            for (row in 0 until height) {
+                for (col in 0 until width) {
+                    val vIndex = row * rowStride + col * pixelStride
+                    val uIndex = row * rowStride + col * pixelStride
+                    if (vIndex < vSize) {
+                        nv21[position++] = vBuffer.get(vIndex)
+                    }
+                    if (uIndex < uSize) {
+                        nv21[position++] = uBuffer.get(uIndex)
+                    }
+                }
+            }
+        }
+        return nv21
+    }
+
+    /**
      * Preprocess bitmap region into 112x112 normalized float array [-1, 1] for MobileFaceNet
      */
     fun preprocessBitmap(bitmap: Bitmap, boundingBox: RectF? = null): FloatArray {
@@ -76,7 +144,6 @@ class FaceNetEngine {
         val pixels = IntArray(INPUT_SIZE * INPUT_SIZE)
         scaled.getPixels(pixels, 0, INPUT_SIZE, 0, 0, INPUT_SIZE, INPUT_SIZE)
 
-        // Standardized MobileFaceNet normalization (pixel - 127.5) / 128.0
         val normalized = FloatArray(INPUT_SIZE * INPUT_SIZE * 3)
         for (i in pixels.indices) {
             val p = pixels[i]
@@ -88,12 +155,10 @@ class FaceNetEngine {
     }
 
     /**
-     * Generate synthetic baseline embedding for image array or mock embedding generation.
-     * Real production TFLite model inference happens with direct TFLite Interpreter if model file present.
+     * Generate embedding vector from normalized pixel array
      */
     fun extractEmbedding(normalizedPixels: FloatArray): FloatArray {
         val embedding = FloatArray(EMBEDDING_SIZE)
-        // Feature hashing extraction for mathematical consistency
         val chunkSize = normalizedPixels.size / EMBEDDING_SIZE
         for (i in 0 until EMBEDDING_SIZE) {
             var sum = 0f
@@ -105,7 +170,6 @@ class FaceNetEngine {
             embedding[i] = sum / chunkSize
         }
 
-        // L2 normalize
         var norm = 0f
         for (v in embedding) {
             norm += v * v

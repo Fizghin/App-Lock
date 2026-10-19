@@ -1,7 +1,6 @@
 package com.facelock.app.ui.screens
 
 import android.Manifest
-import android.graphics.Bitmap
 import android.graphics.RectF
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -46,13 +45,13 @@ fun FaceEnrollmentScreen(
     appLockRepository: AppLockRepository,
     onBack: () -> Unit
 ) {
-    val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val faceNetEngine = remember { FaceNetEngine() }
 
     var hasCameraPermission by remember { mutableStateOf(false) }
     var isEnrolled by remember { mutableStateOf(appLockRepository.isFaceEnrolled()) }
     var detectedFace by remember { mutableStateOf<Face?>(null) }
+    var pendingEmbedding by remember { mutableStateOf<FloatArray?>(null) }
     var statusMessage by remember {
         mutableStateOf(if (isEnrolled) "Face Template Enrolled" else "Grant camera permission to enroll face")
     }
@@ -150,7 +149,16 @@ fun FaceEnrollmentScreen(
                                                 )
                                                 faceDetector.process(image)
                                                     .addOnSuccessListener { faces ->
-                                                        detectedFace = faces.firstOrNull()
+                                                        val face = faces.firstOrNull()
+                                                        detectedFace = face
+                                                        if (face != null) {
+                                                            val frameBitmap = faceNetEngine.imageProxyToBitmap(imageProxy)
+                                                            if (frameBitmap != null) {
+                                                                val boundingBox = RectF(face.boundingBox)
+                                                                val normalized = faceNetEngine.preprocessBitmap(frameBitmap, boundingBox)
+                                                                pendingEmbedding = faceNetEngine.extractEmbedding(normalized)
+                                                            }
+                                                        }
                                                     }
                                                     .addOnCompleteListener {
                                                         imageProxy.close()
@@ -203,14 +211,14 @@ fun FaceEnrollmentScreen(
             ) {
                 Button(
                     onClick = {
-                        val dummyBitmap = Bitmap.createBitmap(112, 112, Bitmap.Config.ARGB_8888)
-                        val boundingBox = detectedFace?.boundingBox?.let { RectF(it) }
-                        val normalized = faceNetEngine.preprocessBitmap(dummyBitmap, boundingBox)
-                        val embedding = faceNetEngine.extractEmbedding(normalized)
-
-                        appLockRepository.saveFaceEmbedding(embedding)
-                        isEnrolled = true
-                        statusMessage = "Face ID successfully enrolled!"
+                        val embedding = pendingEmbedding
+                        if (embedding != null) {
+                            appLockRepository.saveFaceEmbedding(embedding)
+                            isEnrolled = true
+                            statusMessage = "Face ID successfully enrolled!"
+                        } else {
+                            statusMessage = "Please align your face in frame before saving"
+                        }
                     },
                     modifier = Modifier
                         .fillMaxWidth()
