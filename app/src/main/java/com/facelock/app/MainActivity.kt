@@ -3,9 +3,9 @@ package com.facelock.app
 import android.content.Intent
 import android.os.Build
 import android.os.Bundle
-import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.runtime.Composable
+import androidx.fragment.app.FragmentActivity
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
@@ -17,7 +17,7 @@ import com.facelock.app.ui.screens.FaceEnrollmentScreen
 import com.facelock.app.ui.screens.PinSetupScreen
 import com.facelock.app.ui.theme.DarkColorScheme
 
-class MainActivity : ComponentActivity() {
+class MainActivity : FragmentActivity() {
 
     private lateinit var appLockRepository: AppLockRepository
     private lateinit var pinManager: PinManager

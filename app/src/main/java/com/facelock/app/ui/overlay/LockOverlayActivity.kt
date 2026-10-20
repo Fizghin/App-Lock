@@ -1,21 +1,15 @@
 package com.facelock.app.ui.overlay
 
-import android.Manifest
 import android.content.Intent
 import android.os.Bundle
-import androidx.activity.ComponentActivity
-import androidx.activity.compose.rememberLauncherForActivityResult
+import android.widget.Toast
 import androidx.activity.compose.setContent
-import androidx.activity.result.contract.ActivityResultContracts
-import androidx.camera.core.CameraSelector
-import androidx.camera.core.ImageAnalysis
-import androidx.camera.core.Preview
-import androidx.camera.lifecycle.ProcessCameraProvider
-import androidx.camera.view.PreviewView
+import androidx.compose.animation.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Backspace
 import androidx.compose.material.icons.filled.*
@@ -25,24 +19,19 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.viewinterop.AndroidView
-import androidx.core.content.ContextCompat
+import androidx.fragment.app.FragmentActivity
 import com.facelock.app.data.AppLockRepository
-import com.facelock.app.ml.FaceNetEngine
+import com.facelock.app.security.BiometricPromptManager
 import com.facelock.app.security.PinManager
 import com.facelock.app.service.AppLockAccessibilityService
 import com.facelock.app.service.AppLockService
-import com.google.mlkit.vision.common.InputImage
-import com.google.mlkit.vision.face.FaceDetection
-import com.google.mlkit.vision.face.FaceDetectorOptions
-import java.util.concurrent.Executors
 
-class LockOverlayActivity : ComponentActivity() {
+class LockOverlayActivity : FragmentActivity() {
 
     companion object {
         const val EXTRA_LOCKED_PACKAGE = "extra_locked_package"
@@ -50,12 +39,14 @@ class LockOverlayActivity : ComponentActivity() {
 
     private lateinit var pinManager: PinManager
     private lateinit var appLockRepository: AppLockRepository
+    private lateinit var biometricPromptManager: BiometricPromptManager
     private var lockedPackageName: String = ""
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         pinManager = PinManager(this)
         appLockRepository = AppLockRepository(this)
+        biometricPromptManager = BiometricPromptManager(this)
         lockedPackageName = intent.getStringExtra(EXTRA_LOCKED_PACKAGE) ?: ""
 
         val appName = try {
@@ -80,6 +71,7 @@ class LockOverlayActivity : ComponentActivity() {
                     appName = appName,
                     pinManager = pinManager,
                     appLockRepository = appLockRepository,
+                    biometricPromptManager = biometricPromptManager,
                     onUnlockSuccess = {
                         AppLockAccessibilityService.notifyUnlocked(lockedPackageName)
                         AppLockService.notifyUnlocked(lockedPackageName)
@@ -114,27 +106,36 @@ fun LockOverlayScreen(
     appName: String,
     pinManager: PinManager,
     appLockRepository: AppLockRepository,
+    biometricPromptManager: BiometricPromptManager,
     onUnlockSuccess: () -> Unit,
     onCloseApp: () -> Unit
 ) {
-    val lifecycleOwner = LocalLifecycleOwner.current
-    val faceNetEngine = remember { FaceNetEngine() }
-    val savedTemplate = remember { appLockRepository.getFaceEmbedding() }
-
-    var mode by remember { mutableStateOf(if (appLockRepository.isFaceEnrolled()) OverlayMode.FACE else OverlayMode.PIN) }
+    val context = LocalContext.current
+    var mode by remember { mutableStateOf(OverlayMode.FACE) }
     var pinInput by remember { mutableStateOf("") }
     var errorMessage by remember { mutableStateOf("") }
-    var hasCameraPermission by remember { mutableStateOf(false) }
 
-    val permissionLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.RequestPermission()
-    ) { isGranted ->
-        hasCameraPermission = isGranted
+    val triggerBiometrics = {
+        if (biometricPromptManager.canAuthenticate()) {
+            biometricPromptManager.showBiometricPrompt(
+                title = "Unlock $appName",
+                subtitle = "Scan face to verify identity",
+                negativeButtonText = "Use Backup PIN",
+                onSuccess = { onUnlockSuccess() },
+                onError = { err ->
+                    errorMessage = err
+                    mode = OverlayMode.PIN
+                }
+            )
+        } else {
+            errorMessage = "Biometrics unavailable on device. Use Backup PIN."
+            mode = OverlayMode.PIN
+        }
     }
 
-    LaunchedEffect(mode) {
+    LaunchedEffect(Unit) {
         if (mode == OverlayMode.FACE) {
-            permissionLauncher.launch(Manifest.permission.CAMERA)
+            triggerBiometrics()
         }
     }
 
@@ -192,7 +193,7 @@ fun LockOverlayScreen(
                     textAlign = TextAlign.Center
                 )
                 Text(
-                    text = if (mode == OverlayMode.FACE) "Position face in scanner to unlock" else "Enter backup PIN",
+                    text = if (mode == OverlayMode.FACE) "Biometric Face Recognition" else "Enter Backup PIN",
                     style = MaterialTheme.typography.bodyMedium,
                     color = Color.White.copy(alpha = 0.6f),
                     modifier = Modifier.padding(top = 4.dp)
@@ -203,95 +204,42 @@ fun LockOverlayScreen(
                 if (mode == OverlayMode.FACE) {
                     Box(
                         modifier = Modifier
-                            .size(200.dp)
+                            .size(180.dp)
                             .clip(CircleShape)
                             .background(Color(0xFF1E293B))
                             .border(3.dp, Color(0xFF6366F1), CircleShape),
                         contentAlignment = Alignment.Center
                     ) {
-                        if (hasCameraPermission) {
-                            AndroidView(
-                                factory = { ctx ->
-                                    val previewView = PreviewView(ctx)
-                                    val cameraProviderFuture = ProcessCameraProvider.getInstance(ctx)
-                                    val executor = ContextCompat.getMainExecutor(ctx)
-
-                                    cameraProviderFuture.addListener({
-                                        val cameraProvider = cameraProviderFuture.get()
-                                        val preview = Preview.Builder().build().also {
-                                            it.setSurfaceProvider(previewView.surfaceProvider)
-                                        }
-
-                                        val faceDetector = FaceDetection.getClient(
-                                            FaceDetectorOptions.Builder()
-                                                .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_ACCURATE)
-                                                .setLandmarkMode(FaceDetectorOptions.LANDMARK_MODE_ALL)
-                                                .build()
-                                        )
-
-                                        val imageAnalyzer = ImageAnalysis.Builder()
-                                            .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-                                            .build()
-                                            .also { analysis ->
-                                                analysis.setAnalyzer(Executors.newSingleThreadExecutor()) { imageProxy ->
-                                                    @Suppress("UnsafeOptInUsageError")
-                                                    val mediaImage = imageProxy.image
-                                                    if (mediaImage != null) {
-                                                        val image = InputImage.fromMediaImage(
-                                                            mediaImage,
-                                                            imageProxy.imageInfo.rotationDegrees
-                                                        )
-                                                        faceDetector.process(image)
-                                                            .addOnSuccessListener { faces ->
-                                                                val detectedFace = faces.firstOrNull()
-                                                                if (detectedFace != null && savedTemplate != null) {
-                                                                    val liveVector = faceNetEngine.extractLandmarkVector(detectedFace)
-                                                                    if (liveVector != null && faceNetEngine.match(liveVector, savedTemplate)) {
-                                                                        onUnlockSuccess()
-                                                                    }
-                                                                }
-                                                            }
-                                                            .addOnCompleteListener {
-                                                                imageProxy.close()
-                                                            }
-                                                    } else {
-                                                        imageProxy.close()
-                                                    }
-                                                }
-                                            }
-
-                                        try {
-                                            cameraProvider.unbindAll()
-                                            cameraProvider.bindToLifecycle(
-                                                lifecycleOwner,
-                                                CameraSelector.DEFAULT_FRONT_CAMERA,
-                                                preview,
-                                                imageAnalyzer
-                                            )
-                                        } catch (e: Exception) {
-                                            e.printStackTrace()
-                                        }
-                                    }, executor)
-
-                                    previewView
-                                },
-                                modifier = Modifier.fillMaxSize()
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Icon(
+                                imageVector = Icons.Default.Face,
+                                contentDescription = "Face Scanner",
+                                tint = Color(0xFF818CF8),
+                                modifier = Modifier.size(72.dp)
                             )
-                        } else {
-                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                Icon(
-                                    imageVector = Icons.Default.Face,
-                                    contentDescription = "Face Scanner",
-                                    tint = Color(0xFF818CF8),
-                                    modifier = Modifier.size(64.dp)
-                                )
-                            }
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text(
+                                text = "Scanning Face...",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = Color.White.copy(alpha = 0.7f)
+                            )
                         }
+                    }
+
+                    Spacer(modifier = Modifier.height(20.dp))
+
+                    Button(
+                        onClick = { triggerBiometrics() },
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF6366F1)),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Icon(Icons.Default.Fingerprint, contentDescription = null)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Tap to Scan Face")
                     }
                 } else {
                     // PIN Entry Keypad
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        // Display PIN Dots
                         Row(
                             horizontalArrangement = Arrangement.spacedBy(16.dp),
                             modifier = Modifier.padding(bottom = 20.dp)
@@ -316,7 +264,6 @@ fun LockOverlayScreen(
                             )
                         }
 
-                        // Numeric Keypad Grid
                         val keys = listOf(
                             listOf("1", "2", "3"),
                             listOf("4", "5", "6"),
@@ -377,6 +324,9 @@ fun LockOverlayScreen(
                     mode = if (mode == OverlayMode.FACE) OverlayMode.PIN else OverlayMode.FACE
                     errorMessage = ""
                     pinInput = ""
+                    if (mode == OverlayMode.FACE) {
+                        triggerBiometrics()
+                    }
                 }
             ) {
                 Icon(
