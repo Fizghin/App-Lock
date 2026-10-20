@@ -1,7 +1,6 @@
 package com.facelock.app.ui.screens
 
 import android.Manifest
-import android.graphics.RectF
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.CameraSelector
@@ -23,7 +22,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -51,7 +49,7 @@ fun FaceEnrollmentScreen(
     var hasCameraPermission by remember { mutableStateOf(false) }
     var isEnrolled by remember { mutableStateOf(appLockRepository.isFaceEnrolled()) }
     var detectedFace by remember { mutableStateOf<Face?>(null) }
-    var pendingEmbedding by remember { mutableStateOf<FloatArray?>(null) }
+    var landmarkVector by remember { mutableStateOf<FloatArray?>(null) }
     var statusMessage by remember {
         mutableStateOf(if (isEnrolled) "Face Template Enrolled" else "Grant camera permission to enroll face")
     }
@@ -111,7 +109,7 @@ fun FaceEnrollmentScreen(
                     .background(Color(0xFF1E293B))
                     .border(
                         3.dp,
-                        if (detectedFace != null || isEnrolled) Color(0xFF10B981) else Color(0xFF6366F1),
+                        if (landmarkVector != null || isEnrolled) Color(0xFF10B981) else Color(0xFF6366F1),
                         RoundedCornerShape(130.dp)
                     ),
                 contentAlignment = Alignment.Center
@@ -131,7 +129,8 @@ fun FaceEnrollmentScreen(
 
                                 val faceDetector = FaceDetection.getClient(
                                     FaceDetectorOptions.Builder()
-                                        .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_FAST)
+                                        .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_ACCURATE)
+                                        .setLandmarkMode(FaceDetectorOptions.LANDMARK_MODE_ALL)
                                         .build()
                                 )
 
@@ -152,12 +151,16 @@ fun FaceEnrollmentScreen(
                                                         val face = faces.firstOrNull()
                                                         detectedFace = face
                                                         if (face != null) {
-                                                            val frameBitmap = faceNetEngine.imageProxyToBitmap(imageProxy)
-                                                            if (frameBitmap != null) {
-                                                                val boundingBox = RectF(face.boundingBox)
-                                                                val normalized = faceNetEngine.preprocessBitmap(frameBitmap, boundingBox)
-                                                                pendingEmbedding = faceNetEngine.extractEmbedding(normalized)
+                                                            val vector = faceNetEngine.extractLandmarkVector(face)
+                                                            landmarkVector = vector
+                                                            if (vector != null) {
+                                                                statusMessage = "Face detected! Ready to enroll"
+                                                            } else {
+                                                                statusMessage = "Ensure eyes, nose and mouth are clearly visible"
                                                             }
+                                                        } else {
+                                                            landmarkVector = null
+                                                            statusMessage = "Position face in oval frame"
                                                         }
                                                     }
                                                     .addOnCompleteListener {
@@ -211,13 +214,13 @@ fun FaceEnrollmentScreen(
             ) {
                 Button(
                     onClick = {
-                        val embedding = pendingEmbedding
-                        if (embedding != null) {
-                            appLockRepository.saveFaceEmbedding(embedding)
+                        val vector = landmarkVector
+                        if (vector != null) {
+                            appLockRepository.saveFaceEmbedding(vector)
                             isEnrolled = true
                             statusMessage = "Face ID successfully enrolled!"
                         } else {
-                            statusMessage = "Please align your face in frame before saving"
+                            statusMessage = "Look straight with eyes and mouth visible to capture"
                         }
                     },
                     modifier = Modifier

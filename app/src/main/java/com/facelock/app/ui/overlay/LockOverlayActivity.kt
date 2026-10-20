@@ -2,7 +2,6 @@ package com.facelock.app.ui.overlay
 
 import android.Manifest
 import android.content.Intent
-import android.graphics.RectF
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -225,7 +224,8 @@ fun LockOverlayScreen(
 
                                         val faceDetector = FaceDetection.getClient(
                                             FaceDetectorOptions.Builder()
-                                                .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_FAST)
+                                                .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_ACCURATE)
+                                                .setLandmarkMode(FaceDetectorOptions.LANDMARK_MODE_ALL)
                                                 .build()
                                         )
 
@@ -245,15 +245,9 @@ fun LockOverlayScreen(
                                                             .addOnSuccessListener { faces ->
                                                                 val detectedFace = faces.firstOrNull()
                                                                 if (detectedFace != null && savedTemplate != null) {
-                                                                    val frameBitmap = faceNetEngine.imageProxyToBitmap(imageProxy)
-                                                                    if (frameBitmap != null) {
-                                                                        val boundingBox = RectF(detectedFace.boundingBox)
-                                                                        val liveEmbedding = faceNetEngine.extractEmbedding(
-                                                                            faceNetEngine.preprocessBitmap(frameBitmap, boundingBox)
-                                                                        )
-                                                                        if (faceNetEngine.match(liveEmbedding, savedTemplate)) {
-                                                                            onUnlockSuccess()
-                                                                        }
+                                                                    val liveVector = faceNetEngine.extractLandmarkVector(detectedFace)
+                                                                    if (liveVector != null && faceNetEngine.match(liveVector, savedTemplate)) {
+                                                                        onUnlockSuccess()
                                                                     }
                                                                 }
                                                             }

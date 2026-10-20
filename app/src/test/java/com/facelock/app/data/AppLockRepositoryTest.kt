@@ -2,6 +2,7 @@ package com.facelock.app.data
 
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
+import com.facelock.app.ml.FaceNetEngine
 import org.junit.Assert.*
 import org.junit.Before
 import org.junit.Test
@@ -34,14 +35,14 @@ class AppLockRepositoryTest {
     @Test
     fun testFaceEmbeddingStorage() {
         assertFalse(repository.isFaceEnrolled())
-        val dummyEmbedding = FloatArray(128) { it.toFloat() }
+        val dummyEmbedding = FloatArray(FaceNetEngine.EMBEDDING_SIZE) { it.toFloat() }
 
         repository.saveFaceEmbedding(dummyEmbedding)
         assertTrue(repository.isFaceEnrolled())
 
         val retrieved = repository.getFaceEmbedding()
         assertNotNull(retrieved)
-        assertEquals(128, retrieved!!.size)
+        assertEquals(FaceNetEngine.EMBEDDING_SIZE, retrieved!!.size)
         assertEquals(0.0f, retrieved[0], 0.001f)
 
         repository.deleteFaceTemplate()

@@ -1,185 +1,99 @@
 package com.facelock.app.ml
 
-import android.graphics.*
-import androidx.camera.core.ImageProxy
-import java.io.ByteArrayOutputStream
-import kotlin.math.sqrt
+import android.graphics.PointF
+import com.google.mlkit.vision.face.Face
+import com.google.mlkit.vision.face.FaceLandmark
+import kotlin.math.hypot
 
 /**
- * MobileFaceNet embedding generator & cosine distance matcher.
- * Generates 128-dimensional normalized embedding vectors for face images.
+ * Facial landmark biometrics extractor & matcher.
+ * Computes a scale-invariant, rotation-normalized 16-dimensional facial ratio vector.
  */
 class FaceNetEngine {
 
     companion object {
-        const val EMBEDDING_SIZE = 128
-        const val INPUT_SIZE = 112
-        const val DEFAULT_THRESHOLD = 0.38f
+        const val EMBEDDING_SIZE = 16
+        const val STRICT_MATCH_THRESHOLD = 0.15f
     }
 
     /**
-     * Compute Cosine Distance between two float embedding vectors.
+     * Extracts a 16-dimensional normalized facial feature vector from ML Kit Face Landmarks
      */
-    fun calculateDistance(embedding1: FloatArray, embedding2: FloatArray): Float {
-        if (embedding1.size != embedding2.size) return 1.0f
+    fun extractLandmarkVector(face: Face): FloatArray? {
+        val leftEye = face.getLandmark(FaceLandmark.LEFT_EYE)?.position
+        val rightEye = face.getLandmark(FaceLandmark.RIGHT_EYE)?.position
+        val noseBase = face.getLandmark(FaceLandmark.NOSE_BASE)?.position
+        val mouthLeft = face.getLandmark(FaceLandmark.MOUTH_LEFT)?.position
+        val mouthRight = face.getLandmark(FaceLandmark.MOUTH_RIGHT)?.position
+        val mouthBottom = face.getLandmark(FaceLandmark.MOUTH_BOTTOM)?.position
+        val leftCheek = face.getLandmark(FaceLandmark.LEFT_CHEEK)?.position
+        val rightCheek = face.getLandmark(FaceLandmark.RIGHT_CHEEK)?.position
 
-        var dotProduct = 0.0f
-        var normA = 0.0f
-        var normB = 0.0f
-
-        for (i in embedding1.indices) {
-            dotProduct += embedding1[i] * embedding2[i]
-            normA += embedding1[i] * embedding1[i]
-            normB += embedding2[i] * embedding2[i]
+        if (leftEye == null || rightEye == null || noseBase == null ||
+            mouthLeft == null || mouthRight == null) {
+            return null
         }
 
-        if (normA == 0.0f || normB == 0.0f) return 1.0f
+        // Inter-ocular distance as normalizing scale factor
+        val eyeDist = dist(leftEye, rightEye).coerceAtLeast(1f)
 
-        val similarity = dotProduct / (sqrt(normA.toDouble()) * sqrt(normB.toDouble())).toFloat()
-        return (1.0f - similarity).coerceIn(0.0f, 2.0f)
+        // Midpoint between eyes
+        val eyeMid = PointF((leftEye.x + rightEye.x) / 2f, (leftEye.y + rightEye.y) / 2f)
+        // Midpoint of mouth
+        val mouthMid = PointF((mouthLeft.x + mouthRight.x) / 2f, (mouthLeft.y + mouthRight.y) / 2f)
+
+        val vector = FloatArray(EMBEDDING_SIZE)
+        vector[0] = dist(leftEye, noseBase) / eyeDist
+        vector[1] = dist(rightEye, noseBase) / eyeDist
+        vector[2] = dist(leftEye, mouthLeft) / eyeDist
+        vector[3] = dist(rightEye, mouthRight) / eyeDist
+        vector[4] = dist(noseBase, mouthMid) / eyeDist
+        vector[5] = dist(mouthLeft, mouthRight) / eyeDist
+        vector[6] = dist(eyeMid, noseBase) / eyeDist
+        vector[7] = dist(eyeMid, mouthMid) / eyeDist
+
+        val mouthBottomPos = mouthBottom ?: mouthMid
+        vector[8] = dist(noseBase, mouthBottomPos) / eyeDist
+        vector[9] = dist(leftEye, mouthRight) / eyeDist
+        vector[10] = dist(rightEye, mouthLeft) / eyeDist
+
+        val leftCheekPos = leftCheek ?: leftEye
+        val rightCheekPos = rightCheek ?: rightEye
+        vector[11] = dist(leftCheekPos, rightCheekPos) / eyeDist
+        vector[12] = dist(leftCheekPos, noseBase) / eyeDist
+        vector[13] = dist(rightCheekPos, noseBase) / eyeDist
+        vector[14] = dist(leftEye, mouthMid) / eyeDist
+        vector[15] = dist(rightEye, mouthMid) / eyeDist
+
+        return vector
     }
 
     /**
-     * Match embedding against a saved template embedding vector.
+     * Compute normalized Euclidean distance between two 16-D landmark vectors
+     */
+    fun calculateDistance(v1: FloatArray, v2: FloatArray): Float {
+        if (v1.size != v2.size) return 1.0f
+        var sumSq = 0f
+        for (i in v1.indices) {
+            val diff = v1[i] - v2[i]
+            sumSq += diff * diff
+        }
+        return kotlin.math.sqrt(sumSq.toDouble()).toFloat() / v1.size.toFloat()
+    }
+
+    /**
+     * Match embedding against stored template with strict thresholding
      */
     fun match(
-        embedding1: FloatArray,
-        embedding2: FloatArray,
-        threshold: Float = DEFAULT_THRESHOLD
+        v1: FloatArray,
+        v2: FloatArray,
+        threshold: Float = STRICT_MATCH_THRESHOLD
     ): Boolean {
-        val distance = calculateDistance(embedding1, embedding2)
+        val distance = calculateDistance(v1, v2)
         return distance < threshold
     }
 
-    /**
-     * Convert CameraX ImageProxy to Bitmap
-     */
-    fun imageProxyToBitmap(imageProxy: ImageProxy): Bitmap? {
-        val nv21 = yuv420888ToNv21(imageProxy)
-        val yuvImage = YuvImage(
-            nv21,
-            ImageFormat.NV21,
-            imageProxy.width,
-            imageProxy.height,
-            null
-        )
-        val out = ByteArrayOutputStream()
-        yuvImage.compressToJpeg(Rect(0, 0, imageProxy.width, imageProxy.height), 100, out)
-        val imageBytes = out.toByteArray()
-        val bitmap = BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size) ?: return null
-
-        // Rotate bitmap if necessary
-        val rotation = imageProxy.imageInfo.rotationDegrees
-        return if (rotation != 0) {
-            val matrix = Matrix()
-            matrix.postRotate(rotation.toFloat())
-            Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
-        } else {
-            bitmap
-        }
-    }
-
-    private fun yuv420888ToNv21(imageProxy: ImageProxy): ByteArray {
-        val pixelCount = imageProxy.width * imageProxy.height
-        val nv21 = ByteArray(pixelCount + 2 * (pixelCount / 4))
-        val yPlane = imageProxy.planes[0].buffer
-        val uPlane = imageProxy.planes[1].buffer
-        val vPlane = imageProxy.planes[2].buffer
-
-        val ySize = yPlane.remaining()
-        yPlane.get(nv21, 0, ySize)
-
-        val vSize = vPlane.remaining()
-        val uSize = uPlane.remaining()
-
-        var position = pixelCount
-        if (vSize == 1 && uSize == 1) {
-            nv21[position++] = vPlane.get()
-            nv21[position] = uPlane.get()
-        } else {
-            val vBuffer = vPlane
-            val uBuffer = uPlane
-            val rowStride = imageProxy.planes[1].rowStride
-            val pixelStride = imageProxy.planes[1].pixelStride
-
-            val width = imageProxy.width / 2
-            val height = imageProxy.height / 2
-
-            for (row in 0 until height) {
-                for (col in 0 until width) {
-                    val vIndex = row * rowStride + col * pixelStride
-                    val uIndex = row * rowStride + col * pixelStride
-                    if (vIndex < vSize) {
-                        nv21[position++] = vBuffer.get(vIndex)
-                    }
-                    if (uIndex < uSize) {
-                        nv21[position++] = uBuffer.get(uIndex)
-                    }
-                }
-            }
-        }
-        return nv21
-    }
-
-    /**
-     * Preprocess bitmap region into 112x112 normalized float array [-1, 1] for MobileFaceNet
-     */
-    fun preprocessBitmap(bitmap: Bitmap, boundingBox: RectF? = null): FloatArray {
-        val cropped = if (boundingBox != null) {
-            val left = boundingBox.left.coerceAtLeast(0f).toInt()
-            val top = boundingBox.top.coerceAtLeast(0f).toInt()
-            val width = boundingBox.width().coerceAtMost(bitmap.width - left.toFloat()).toInt()
-            val height = boundingBox.height().coerceAtMost(bitmap.height - top.toFloat()).toInt()
-
-            if (width > 0 && height > 0) {
-                Bitmap.createBitmap(bitmap, left, top, width, height)
-            } else {
-                bitmap
-            }
-        } else {
-            bitmap
-        }
-
-        val scaled = Bitmap.createScaledBitmap(cropped, INPUT_SIZE, INPUT_SIZE, true)
-        val pixels = IntArray(INPUT_SIZE * INPUT_SIZE)
-        scaled.getPixels(pixels, 0, INPUT_SIZE, 0, 0, INPUT_SIZE, INPUT_SIZE)
-
-        val normalized = FloatArray(INPUT_SIZE * INPUT_SIZE * 3)
-        for (i in pixels.indices) {
-            val p = pixels[i]
-            normalized[i * 3 + 0] = (((p shr 16) and 0xFF) - 127.5f) / 128.0f
-            normalized[i * 3 + 1] = (((p shr 8) and 0xFF) - 127.5f) / 128.0f
-            normalized[i * 3 + 2] = ((p and 0xFF) - 127.5f) / 128.0f
-        }
-        return normalized
-    }
-
-    /**
-     * Generate embedding vector from normalized pixel array
-     */
-    fun extractEmbedding(normalizedPixels: FloatArray): FloatArray {
-        val embedding = FloatArray(EMBEDDING_SIZE)
-        val chunkSize = normalizedPixels.size / EMBEDDING_SIZE
-        for (i in 0 until EMBEDDING_SIZE) {
-            var sum = 0f
-            val start = i * chunkSize
-            val end = (start + chunkSize).coerceAtMost(normalizedPixels.size)
-            for (j in start until end) {
-                sum += normalizedPixels[j]
-            }
-            embedding[i] = sum / chunkSize
-        }
-
-        var norm = 0f
-        for (v in embedding) {
-            norm += v * v
-        }
-        norm = sqrt(norm.toDouble()).toFloat()
-        if (norm > 0) {
-            for (i in embedding.indices) {
-                embedding[i] /= norm
-            }
-        }
-        return embedding
+    private fun dist(p1: PointF, p2: PointF): Float {
+        return hypot((p1.x - p2.x).toDouble(), (p1.y - p2.y).toDouble()).toFloat()
     }
 }

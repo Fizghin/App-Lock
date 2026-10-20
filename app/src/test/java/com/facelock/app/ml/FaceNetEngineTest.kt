@@ -15,25 +15,18 @@ class FaceNetEngineTest {
 
     @Test
     fun testIdenticalVectorsDistanceIsZero() {
-        val vec = FloatArray(128) { i -> (i % 10).toFloat() }
+        val vec = FloatArray(16) { (it + 1).toFloat() }
         val distance = faceNetEngine.calculateDistance(vec, vec)
         assertEquals(0.0f, distance, 0.001f)
     }
 
     @Test
-    fun testMatchingThreshold() {
-        val vec1 = FloatArray(128) { 1.0f }
-        val vec2 = FloatArray(128) { 0.95f }
-        assertTrue(faceNetEngine.match(vec1, vec2))
+    fun testMatchingThresholdStrictness() {
+        val vec1 = FloatArray(16) { 1.0f }
+        val similarVec = FloatArray(16) { 1.02f }
+        assertTrue(faceNetEngine.match(vec1, similarVec))
 
-        val orthogonalVec = FloatArray(128) { if (it % 2 == 0) 1.0f else -1.0f }
-        assertFalse(faceNetEngine.match(vec1, orthogonalVec))
-    }
-
-    @Test
-    fun testExtractEmbeddingOutputSize() {
-        val dummyPixels = FloatArray(112 * 112 * 3) { 0.5f }
-        val embedding = faceNetEngine.extractEmbedding(dummyPixels)
-        assertEquals(128, embedding.size)
+        val distinctVec = FloatArray(16) { 2.5f }
+        assertFalse(faceNetEngine.match(vec1, distinctVec))
     }
 }
