@@ -49,7 +49,7 @@ fun FaceEnrollmentScreen(
     var hasCameraPermission by remember { mutableStateOf(false) }
     var isEnrolled by remember { mutableStateOf(appLockRepository.isFaceEnrolled()) }
     var detectedFace by remember { mutableStateOf<Face?>(null) }
-    var landmarkVector by remember { mutableStateOf<FloatArray?>(null) }
+    var pendingVector by remember { mutableStateOf<FloatArray?>(null) }
     var statusMessage by remember {
         mutableStateOf(if (isEnrolled) "Face Template Enrolled" else "Grant camera permission to enroll face")
     }
@@ -109,7 +109,7 @@ fun FaceEnrollmentScreen(
                     .background(Color(0xFF1E293B))
                     .border(
                         3.dp,
-                        if (landmarkVector != null || isEnrolled) Color(0xFF10B981) else Color(0xFF6366F1),
+                        if (pendingVector != null || isEnrolled) Color(0xFF10B981) else Color(0xFF6366F1),
                         RoundedCornerShape(130.dp)
                     ),
                 contentAlignment = Alignment.Center
@@ -151,16 +151,15 @@ fun FaceEnrollmentScreen(
                                                         val face = faces.firstOrNull()
                                                         detectedFace = face
                                                         if (face != null) {
-                                                            val vector = faceNetEngine.extractLandmarkVector(face)
-                                                            landmarkVector = vector
+                                                            val frameBitmap = faceNetEngine.imageProxyToBitmap(imageProxy)
+                                                            val vector = faceNetEngine.extractFeatureVector(face, frameBitmap)
+                                                            pendingVector = vector
                                                             if (vector != null) {
-                                                                statusMessage = "Face detected! Ready to enroll"
-                                                            } else {
-                                                                statusMessage = "Ensure eyes, nose and mouth are clearly visible"
+                                                                statusMessage = "Face detected! Ready to capture"
                                                             }
                                                         } else {
-                                                            landmarkVector = null
-                                                            statusMessage = "Position face in oval frame"
+                                                            pendingVector = null
+                                                            statusMessage = "Position face inside frame"
                                                         }
                                                     }
                                                     .addOnCompleteListener {
@@ -214,13 +213,13 @@ fun FaceEnrollmentScreen(
             ) {
                 Button(
                     onClick = {
-                        val vector = landmarkVector
+                        val vector = pendingVector
                         if (vector != null) {
                             appLockRepository.saveFaceEmbedding(vector)
                             isEnrolled = true
                             statusMessage = "Face ID successfully enrolled!"
                         } else {
-                            statusMessage = "Look straight with eyes and mouth visible to capture"
+                            statusMessage = "Align face in frame to capture"
                         }
                     },
                     modifier = Modifier
